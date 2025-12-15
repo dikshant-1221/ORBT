@@ -1,0 +1,122 @@
+import pandas as pd
+import numpy as np
+import plotly.graph_objects as go
+
+# ===============================
+# LOAD DATA
+# ===============================
+data = pd.read_feather("BTC_USDT_USDT-5m-futures.feather")
+
+data["date"] = pd.to_datetime(data["date"])
+data = data.set_index("date").sort_index()
+
+# ===============================
+# SESSION DAY
+# ===============================
+data["session_day"] = data.index.date
+data = data.loc["2025-01-01":"2025-02-02"]
+
+# ===============================
+# PREPARE COLUMNS
+# ===============================
+data["signal"] = np.nan
+data["ORH"] = np.nan
+data["ORL"] = np.nan
+
+# ===============================
+# ORB SETTINGS
+# ===============================
+ORB_START = "00:00"
+ORB_END   = "00:30"
+
+# ===============================
+# BUILD ORB
+# ===============================
+for day, rows in data.groupby("session_day"):
+    orb = rows.between_time(ORB_START, ORB_END)
+    if orb.empty:
+        continue
+
+    ORH = orb["high"].max()
+    ORL = orb["low"].min()
+
+    data.loc[data["session_day"] == day, "ORH"] = ORH
+    data.loc[data["session_day"] == day, "ORL"] = ORL
+
+# ===============================
+# SIGNAL GENERATION (ALTERNATING)
+# ===============================
+for day, rows in data.groupby("session_day"):
+    if rows["ORH"].isna().all():
+        continue
+
+    ORH = rows["ORH"].iloc[0]
+    ORL = rows["ORL"].iloc[0]
+
+    last_signal = None
+
+    for t, row in rows.sort_index().iterrows():
+        cp = row["close"]
+
+        if cp > ORH and last_signal != "BUY":
+            data.at[t, "signal"] = "BUY"
+            last_signal = "BUY"
+
+        elif cp < ORL and last_signal != "SELL":
+            data.at[t, "signal"] = "SELL"
+            last_signal = "SELL"
+
+# ===============================
+# 👉 SAVE SIGNALS TO CSV (FIX)
+# ===============================
+signals_df = data.dropna(subset=["signal"])[
+    ["session_day", "open", "high", "low", "close", "ORH", "ORL", "signal"]
+]
+
+signals_df.to_csv("ORB_signals.csv", index=True)
+
+print("✅ CSV SAVED SUCCESSFULLY")
+print("📁 File name: ORB_signals.csv")
+print("📊 Total signals:", len(signals_df))
+
+# ===============================
+# OPTIONAL PLOT
+# ===============================
+fig = go.Figure()
+
+fig.add_trace(go.Candlestick(
+    x=data.index,
+    open=data["open"],
+    high=data["high"],
+    low=data["low"],
+    close=data["close"],
+    name="Price"
+))
+
+fig.add_trace(go.Scatter(x=data.index, y=data["ORH"], mode="lines", name="ORH"))
+fig.add_trace(go.Scatter(x=data.index, y=data["ORL"], mode="lines", name="ORL"))
+
+buy = data[data["signal"] == "BUY"]
+fig.add_trace(go.Scatter(
+    x=buy.index, y=buy["close"],
+    mode="markers",
+    marker=dict(size=12, symbol="triangle-up", color="purple"),
+    name="BUY"
+))
+
+sell = data[data["signal"] == "SELL"]
+fig.add_trace(go.Scatter(
+    x=sell.index, y=sell["close"],
+    mode="markers",
+    marker=dict(size=12, symbol="triangle-down", color="red"),
+    name="SELL"
+))
+
+fig.update_layout(
+    template="plotly_dark",
+    height=850,
+    xaxis_rangeslider_visible=False,
+    title="ORB Alternating Signals"
+)
+
+fig.show()
