@@ -1,0 +1,326 @@
+data["date"] = pd.to_datetime(data["date"])
+#data["date"] = pd.to_datetime(data["open_time"], unit="ms")
+data = data.set_index("date")
+data = data.sort_index()
+
+# Shift index so new session starts at 13:00
+data["session_day"] = (data.index - pd.Timedelta(hours=4)).date
+
+# Select month
+data = data.loc["2025-01-01":"2025-01-10"]
+
+# Prepare columns
+data["signal"] = "HOLD"
+data["ORH"] = np.nan
+data["ORL"] = np.nan
+
+
+# -------------------------------
+# BUILD ORB PER SESSION DAY
+# -------------------------------
+ORB_START = "04:00"
+ORB_END   = "04:15"
+
+for day, rows in data.groupby(data["session_day"]):
+    one_day = rows.sort_index()
+    day_str = str(day)
+
+    orb = one_day.between_time(ORB_START, ORB_END)
+    if len(orb) == 0:
+        continue
+
+    ORH = orb["high"].max()
+    ORL = orb["low"].min()
+
+    data.loc[data["session_day"] == day, "ORH"] = ORH
+    data.loc[data["session_day"] == day, "ORL"] = ORL
+
+
+# -------------------------------
+# SIGNAL GENERATION (CONDITIONS 1–4)
+# USING session_day
+# -------------------------------
+for day, rows in data.groupby(data["session_day"]):
+    one_day = rows.sort_index()
+    day_str = str(day)
+
+    if one_day["ORH"].isna().all():
+        continue
+
+    ORH = one_day["ORH"].iloc[0]
+    ORL = one_day["ORL"].iloc[0]
+
+    last_signal = "NO_trade_open"
+    position=0
+    for t, row in one_day.iterrows():
+        op = row["open"]
+        cp = row["close"]
+
+        new_signal = last_signal
+
+        # Condition 1
+        if  cp > ORH and op <ORH:
+            new_signal = "BUY"
+
+        # # Condition 2
+        if cp < ORL and op>ORL:
+            new_signal = "SELL"
+
+        # # Condition 3
+        # if last_signal == "BUY" and cp < ORL and op<ORL:
+        #     new_signal = "SELL"
+
+        # # Condition 4
+        # if last_signal == "SELL" and cp > ORH and op<ORH:
+        #     new_signal = "BUY"
+
+        # Save only new signals
+        if position==0:
+            data.at[t, "signal"] = new_signal
+            new_signal=last_signal
+            position=1
+        elif new_signal != last_signal:
+            data.at[t, "signal"] = new_signal
+            new_signal=last_signal
+            position=1
+        else:
+           data.at[t, "signal"] = "NO_trade_open"
+
+
+
+# -------------------------------
+# MULTI-SIGNAL TREND CONTINUATION ANALYSIS
+# USING session_day
+# -------------------------------
+# -------------------------------
+# MULTI-SIGNAL TREND CONTINUATION ANALYSIS
+# -------------------------------
+# results = []
+
+# for day, rows in data.groupby(data["session_day"]):
+#     one_day = rows.sort_index()
+#     day_str = str(day)
+
+#     if one_day["ORH"].isna().all():
+#         continue
+
+#     ORH = one_day["ORH"].iloc[0]
+#     ORL = one_day["ORL"].iloc[0]
+
+#     signals = one_day[one_day["signal"].isin(["BUY", "SELL"])]
+#     if signals.empty:
+#         continue
+
+#     for entry_time, row in signals.iterrows():
+
+#         entry_signal = row["signal"]
+#         entry_price  = row["close"]
+
+#         after = one_day.loc[entry_time:].iloc[1:]
+#         if after.empty:
+#             continue
+
+#         # ✅ Correct risk definition
+#         if entry_signal == "BUY":
+#             risk = entry_price - ORH
+#             trail_sl = ORH
+#             best_price = entry_price
+#         else:
+#             risk = ORL - entry_price
+#             trail_sl = ORL
+#             best_price = entry_price
+
+#         exit_time = None
+#         exit_reason = "DAY_END"
+
+#         for t2, r2 in after.iterrows():
+
+#             if entry_signal == "BUY":
+#                 best_price = max(best_price, r2["high"])
+#                 trail_sl = max(trail_sl, best_price - 500)
+
+#                 if r2["low"] <= trail_sl:
+#                     exit_time = t2
+#                     exit_reason = "TRAILING_SL"
+#                     position = 0
+#                     break
+
+#             else:
+#                 best_price = min(best_price, r2["low"])
+#                 trail_sl = min(trail_sl, best_price + 500)
+
+#                 if r2["high"] >= trail_sl:
+#                     exit_time = t2
+#                     exit_reason = "TRAILING_SL"
+#                     position = 0
+#                     break
+
+#         # ---- Exit handling ----
+#         if exit_time is None:
+#             exit_time = after.index[-1]
+#             exit_price = after["close"].iloc[-1]
+#             exit_slice = after
+#         else:
+#             exit_price = one_day.loc[exit_time, "close"]
+#             exit_slice = after.loc[:exit_time]
+
+#         if entry_signal == "BUY":
+#             pnl = exit_price - entry_price
+#             max_high = exit_slice["high"].max()
+#             max_levels = (max_high - entry_price) / risk
+#         else:
+#             pnl = entry_price - exit_price
+#             min_low = exit_slice["low"].min()
+#             max_levels = (entry_price - min_low) / risk
+
+#         results.append({
+#             "session_day": day_str,
+#             "entry_time": entry_time,
+#             "entry_signal": entry_signal,
+#             "entry_price": entry_price,
+#             "exit_time": exit_time,
+#             "exit_price": exit_price,
+#             "exit_reason": exit_reason,
+#             "max_levels": round(float(max_levels), 3),
+#             "pnl": pnl
+#         })
+
+# results_df = pd.DataFrame(results)
+
+results = []
+
+for day, rows in data.groupby(data["session_day"]):
+    one_day = rows.sort_index()
+    day_str = str(day)
+
+    if one_day["ORH"].isna().all():
+        continue
+
+    ORH = one_day["ORH"].dropna().iloc[0]
+    ORL = one_day["ORL"].dropna().iloc[0]
+
+    signals = one_day[one_day["signal"].isin(["BUY", "SELL"])]
+    if len(signals) == 0:
+        continue
+
+    for entry_time, row in signals.iterrows():
+
+        entry_signal = row["signal"]
+        entry_price  = row["close"]
+
+
+        after = one_day.loc[entry_time:].iloc[1:]
+        if after.empty:
+          continue
+
+        risk = (
+              entry_price - ORH if entry_signal == "BUY"
+                                else ORL - entry_price
+                         )
+
+        tp_price = (
+              entry_price + 1000 if entry_signal == "BUY"
+                                else entry_price - 1000
+         )
+        exit_time = None
+        exit_reason = "DAY_END"
+
+        for t2, r2 in after.iterrows():
+
+           # TAKE PROFIT first
+           if entry_signal == "BUY" and r2["close"] >= tp_price:
+             exit_time = t2
+             exit_reason = "TAKE_PROFIT"
+             new_Signal="no_trade_open"
+             break
+
+           if entry_signal == "SELL" and r2["close"] <= tp_price:
+             exit_time = t2
+             exit_reason = "TAKE_PROFIT"
+             new_Signal="no_trade_open"
+             break
+
+             # stop loss
+           if entry_signal =="BUY" and r2["close"]<ORH:
+             exit_time = t2
+             exit_reason = "SL"
+             new_Signal="no_trade_open"
+             break
+           elif entry_signal =="SELL" and r2["close"]>ORL:
+              exit_time = t2
+              exit_reason = "SL"
+              new_Signal="no_trade_open"
+              break
+
+
+
+        if exit_time is None:
+            exit_time = after.index[-1]
+            exit_price = after["close"].iloc[-1]
+            exit_slice = after
+            max_high = exit_slice["high"].max()
+            if entry_signal == "BUY":
+                pnl = exit_price - entry_price
+            else:
+             pnl = entry_price - exit_price
+
+        else:
+            exit_price = one_day.loc[exit_time, "close"]
+            exit_slice = after.loc[:exit_time]
+            max_high = exit_slice["high"].max()
+            if entry_signal == "BUY":
+                pnl = exit_price - entry_price
+            else:
+             pnl = entry_price - exit_price
+
+        if entry_signal == "BUY":
+            max_high = exit_slice["high"].max()
+            max_levels = (max_high - entry_price) / (entry_price - ORH)
+
+        else:
+            min_low = exit_slice["low"].min()
+            max_levels = (entry_price - min_low) / (ORL-entry_price)
+
+
+        results.append({
+            "session_day": day_str,
+            "entry_time": entry_time,
+            "entry_signal": entry_signal,
+            "entry_price": entry_price,
+            "exit_time": exit_time,
+            "exit_price": exit_price,
+            "exit_reason": exit_reason,
+            "max_levels": round(float(max_levels), 3),
+            "pnl":pnl
+        })
+results_df = pd.DataFrame(results)
+results_df.to_csv("ORB_trend_analysis.csv", index=False)
+print("CSV saved — rows:", len(results_df))
+# # -------------------------------
+# # PLOT CHART (OPTIONAL)
+# # -------------------------------
+fig = go.Figure()
+
+fig.add_trace(go.Candlestick(
+    x=data.index,
+    open=data["open"],
+    high=data["high"],
+    low=data["low"],
+    close=data["close"],
+    name="Candles"
+))
+
+fig.add_trace(go.Scatter(x=data.index, y=data["ORH"], mode="lines", name="ORH"))
+fig.add_trace(go.Scatter(x=data.index, y=data["ORL"], mode="lines", name="ORL"))
+
+# Plot buy/sell points
+bp = data[data["signal"] == "BUY"]
+fig.add_trace(go.Scatter(x=bp.index, y=bp["close"], mode="markers",
+    marker=dict(size=10, symbol="triangle-up"), name="BUY"))
+
+sp = data[data["signal"] == "SELL"]
+fig.add_trace(go.Scatter(x=sp.index, y=sp["close"], mode="markers",
+    marker=dict(size=10, symbol="triangle-down"), name="SELL"))
+
+fig.update_layout(template="plotly_dark", xaxis_rangeslider_visible=False, height=850)
+fig.show()
